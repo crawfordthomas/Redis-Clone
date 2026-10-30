@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"errors"
 	"io"
 	"log"
 	"net"
@@ -64,14 +65,16 @@ func handleConnection(conn net.Conn, store *Store) {
 		var result []string
 		line, err := reader.ReadString('\n')
 		if err != nil {
-			log.Printf("Read failed: %v", err)
+			if !errors.Is(err, io.EOF) {
+				log.Printf("Read error: %v", err)
+			}
 			break
 		}
 		count, err := strconv.Atoi(strings.TrimSpace(line[1:]))
 		for range count {
 			arg, err := reader.ReadString('\n')
 			if err != nil {
-				log.Printf("Read failed: %v", err)
+				log.Printf("Truncated command: %v", err)
 				break
 			}
 			size, err := strconv.Atoi(strings.TrimSpace(arg[1:]))
@@ -81,13 +84,25 @@ func handleConnection(conn net.Conn, store *Store) {
 			reader.ReadString('\n')
 		}
 		
-		
 		if len(result) == 0 {
 			continue
-		} else if strings.ToUpper(result[0]) == "SET" {
+		}
+
+		switch strings.ToUpper(result[0]) {
+		case "PING":
+			conn.Write([]byte("+PONG\r\n"))
+		case "SET":
+			if len(result) != 3 {
+				conn.Write([]byte("-ERR wrong number of arguments for 'set' command\r\n"))
+				continue
+			}
 			store.Set(result[1], result[2])
 			conn.Write([]byte("+OK\r\n"))
-		} else if strings.ToUpper(result[0]) == "GET" {
+		case "GET":
+			if len(result) != 2 {
+				conn.Write([]byte("-ERR wrong number of arguments for 'get' command\r\n"))
+				continue
+			}
 			value, ok := store.Get(result[1])
 			if ok {
 				len := strconv.Itoa(len(value))
@@ -95,8 +110,8 @@ func handleConnection(conn net.Conn, store *Store) {
 			} else {
 				conn.Write([]byte("$-1\r\n"))
 			}
-		} else {
-			conn.Write([]byte("+PONG\r\n")) 
+		default:
+			conn.Write([]byte("-ERR unknown command '" + result[0] + "'\r\n"))
 		}
 	}
 }

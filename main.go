@@ -9,30 +9,79 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 )
+
+type Entry struct {
+	value string
+	expiresAt time.Time
+}
 
 type Store struct {
 	mu sync.RWMutex
-	data map[string]string
+	data map[string]Entry
 }
 
 func NewStore() *Store {
 	return &Store{
-		data: make(map[string]string),
+		data: make(map[string]Entry),
 	}
 }
 
-func (s *Store) Set(key, value string) {
+func (s *Store) Set(key, value string, expiresAt time.Time) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.data[key] = value
+	s.data[key] = Entry{value: value, expiresAt: expiresAt}
 }
 
 func (s *Store) Get(key string) (string, bool) {
 	s.mu.RLock()
+	entry, exists := s.data[key]
+	if !entry.expiresAt.IsZero() && time.Now().After(entry.expiresAt) {
+		s.mu.RUnlock()
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		entry, exists := s.data[key]
+		if !entry.expiresAt.IsZero() && time.Now().After(entry.expiresAt) {
+			delete(s.data, key)
+			return "", false
+		}
+		return entry.value, exists
+	}
 	defer s.mu.RUnlock()
-	val, exists := s.data[key]
-	return val, exists
+	return entry.value, exists
+}
+
+func (s *Store) Del(key string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.data, key)
+}
+
+func (s *Store) startSweeper(interval time.Duration) {
+	batchSize := 20
+	threshold := 10
+	for {
+		removed := s.sweepBatch(batchSize)
+		if removed > threshold { continue }
+		time.Sleep(interval)
+	}
+}
+
+func (s *Store) sweepBatch(batchSize int) int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	checked := 0
+	removed := 0
+	for key, entry := range s.data {
+		if checked >= batchSize { break }
+		checked++
+		if !entry.expiresAt.IsZero() && time.Now().After(entry.expiresAt) {
+			delete(s.data, key)
+			removed++
+		}
+	}
+	return removed
 }
 
 func main() {
@@ -47,6 +96,7 @@ func startServer(address string) error {
 		return err
 	}
 	defer listener.Close()
+	go store.startSweeper(5 * time.Minute)
 
 	for {
 		conn, err := listener.Accept()
@@ -92,11 +142,21 @@ func handleConnection(conn net.Conn, store *Store) {
 		case "PING":
 			conn.Write([]byte("+PONG\r\n"))
 		case "SET":
+			expiresAt := time.Time{}
 			if len(result) != 3 {
-				conn.Write([]byte("-ERR wrong number of arguments for 'set' command\r\n"))
-				continue
+				if len(result) == 5 && strings.ToUpper(result[3]) == "EX" {
+					seconds, err := strconv.Atoi(result[4])
+					if err != nil {
+						conn.Write([]byte("-ERR value is not an integer"))
+						continue
+					}
+					expiresAt = time.Now().Add(time.Duration(seconds) * time.Second)
+				} else {
+					conn.Write([]byte("-ERR wrong number of arguments for 'set' command\r\n"))
+					continue
+				}
 			}
-			store.Set(result[1], result[2])
+			store.Set(result[1], result[2], expiresAt)
 			conn.Write([]byte("+OK\r\n"))
 		case "GET":
 			if len(result) != 2 {

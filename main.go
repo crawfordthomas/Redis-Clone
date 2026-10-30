@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"log"
+	"math"
 	"net"
 	"strconv"
 	"strings"
@@ -34,7 +35,7 @@ func (s *Store) Set(key, value string, expiresAt time.Time) {
 	s.data[key] = Entry{value: value, expiresAt: expiresAt}
 }
 
-func (s *Store) Get(key string) (string, bool) {
+func (s *Store) getEntry(key string) (Entry, bool) {
 	s.mu.RLock()
 	entry, exists := s.data[key]
 	if !entry.expiresAt.IsZero() && time.Now().After(entry.expiresAt) {
@@ -44,12 +45,24 @@ func (s *Store) Get(key string) (string, bool) {
 		entry, exists := s.data[key]
 		if !entry.expiresAt.IsZero() && time.Now().After(entry.expiresAt) {
 			delete(s.data, key)
-			return "", false
+			return Entry{}, false
 		}
-		return entry.value, exists
+		return entry, exists
 	}
 	defer s.mu.RUnlock()
+	return entry, exists
+}
+
+func (s *Store) Get(key string) (string, bool) {
+	entry, exists := s.getEntry(key)
 	return entry.value, exists
+}
+
+func (s *Store) TTL(key string) (int) {
+	entry, exists := s.getEntry(key)
+	if !exists { return -2 }
+	if entry.expiresAt.IsZero() { return -1 }
+	return int(math.Round(time.Until(entry.expiresAt).Seconds()))
 }
 
 func (s *Store) Del(key string) {
@@ -147,7 +160,7 @@ func handleConnection(conn net.Conn, store *Store) {
 				if len(result) == 5 && strings.ToUpper(result[3]) == "EX" {
 					seconds, err := strconv.Atoi(result[4])
 					if err != nil {
-						conn.Write([]byte("-ERR value is not an integer"))
+						conn.Write([]byte("-ERR value is not an integer\r\n"))
 						continue
 					}
 					expiresAt = time.Now().Add(time.Duration(seconds) * time.Second)
@@ -170,6 +183,13 @@ func handleConnection(conn net.Conn, store *Store) {
 			} else {
 				conn.Write([]byte("$-1\r\n"))
 			}
+		case "TTL":
+			if len(result) != 2 {
+				conn.Write([]byte("-ERR wrong number of arguments for 'TTL' command\r\n"))
+				continue
+			}
+			ttl := store.TTL(result[1])
+			conn.Write([]byte(":" + strconv.Itoa(ttl) + "\r\n"))
 		default:
 			conn.Write([]byte("-ERR unknown command '" + result[0] + "'\r\n"))
 		}

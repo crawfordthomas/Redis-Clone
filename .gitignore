@@ -1,0 +1,32 @@
+# VibeWise learning notes (local only)
+.vibe-wise/
+
+# Compiled binaries / build output
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+/bin/
+/dist/
+redis-clone
+redis-clone.exe
+
+# Test & coverage artifacts
+*.test
+*.out
+coverage.*
+
+# Go workspace file (machine-local)
+go.work
+go.work.sum
+
+# Append-only log / data files produced at runtime (milestone 5+)
+*.aof
+/data/
+
+# Editor / OS cruft
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
